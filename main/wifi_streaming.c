@@ -55,15 +55,17 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
 
-    // 优化WiFi缓冲区配置 - 降低缓冲区数量
+    // 针对手机热点优化的WiFi配置
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    cfg.dynamic_tx_buf_num = 16;     // 减少到16个动态发送缓冲区
-    cfg.dynamic_rx_buf_num = 16;     // 减少到16个动态接收缓冲区
-    cfg.static_tx_buf_num = 0;       // 不使用静态缓冲区
-    cfg.static_rx_buf_num = 8;       // 减少静态接收缓冲区
+    cfg.dynamic_tx_buf_num = 16;     // 减少缓冲区（手机热点带宽有限）
+    cfg.dynamic_rx_buf_num = 16;     
+    cfg.static_tx_buf_num = 2;       // 减少静态缓冲区
+    cfg.static_rx_buf_num = 6;       
+    cfg.tx_buf_type = 1;             // 使用动态缓冲区
     
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    // 注册事件处理器
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, &instance_any_id));
@@ -74,23 +76,48 @@ esp_err_t wifi_init_sta(void)
             .ssid = WIFI_SSID,
             .password = WIFI_PASSWORD,
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {
+                .capable = true,
+                .required = false
+            },
+            // 手机热点优化设置
+            .bssid_set = false,          // 不指定BSSID
+            .channel = 0,                // 自动搜索信道
         },
     };
+    
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     
-    // 添加性能优化
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));  // 禁用省电模式
+    // 重要：针对手机热点的优化设置
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));        // 禁用省电模式
+    
+    // 尝试设置带宽（手机热点可能不支持40MHz，会自动回退到20MHz）
+    esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);     // 明确使用20MHz
+    
+    // 设置协议模式（优先使用802.11n）
+    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
+    // 等待连接
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, 
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, 
+                                           pdFALSE, pdFALSE, portMAX_DELAY);
     
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi连接成功");
+        ESP_LOGI(TAG, "WiFi连接手机热点成功");
+        
+        // 连接成功后检查实际参数
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            ESP_LOGI(TAG, "连接信息 - RSSI: %d, 信道: %d, 认证模式: %d", 
+                     ap_info.rssi, ap_info.primary, ap_info.authmode);
+        }
+        
         return ESP_OK;
     } else {
-        ESP_LOGI(TAG, "WiFi连接失败");
+        ESP_LOGI(TAG, "WiFi连接手机热点失败");
         return ESP_FAIL;
     }
 }
@@ -100,10 +127,11 @@ static esp_err_t stream_handler(httpd_req_t *req)
 {
     camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
-    char part_buf[128];  // 增加缓冲区
+    char part_buf[128];
     size_t frame_count = 0;
     size_t error_count = 0;
-    const size_t max_errors = 5;  // 允许的最大连续错误数
+    size_t dropped_frames = 0;  // 统计丢帧数
+    const size_t max_errors = 5;
 
     ESP_LOGI(TAG, "开始视频流传输");
 
@@ -118,30 +146,37 @@ static esp_err_t stream_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Keep-Alive", "timeout=5, max=100");  // 添加keep-alive参数
 
     while (true) {
+        // 关键优化：立即获取最新帧，清空缓冲区
         fb = esp_camera_fb_get();
         if (!fb) {
             ESP_LOGW(TAG, "摄像头获取失败");
-            vTaskDelay(100 / portTICK_PERIOD_MS);
+            vTaskDelay(50 / portTICK_PERIOD_MS);  // 减少延时
             continue;
         }
 
         frame_count++;
 
-        // 跳帧处理 - 根据错误情况动态调整
-        int skip_frames = (error_count > 2) ? 6 : 3;  // 错误多时跳更多帧
+        // 更激进的跳帧策略
+        int skip_frames = 3;  // 固定跳3帧，只发送1帧
+        if (error_count > 1) {
+            skip_frames = 12;  // 错误时跳更多
+        }
+        
         if (frame_count % skip_frames != 0) {
             esp_camera_fb_return(fb);
-            vTaskDelay(25 / portTICK_PERIOD_MS);
-            continue;
+            dropped_frames++;
+            
+            // 重要：不要延时！立即获取下一帧
+            continue;  
         }
 
         // 大帧检查 - 根据错误情况动态调整阈值
-        size_t max_frame_size = (error_count > 2) ? 15 * 1024 : 25 * 1024;
+        size_t max_frame_size = (error_count > 2) ? 12 * 1024 : 25 * 1024;
         if (fb->len > max_frame_size) {
             ESP_LOGW(TAG, "帧过大 (%zu KB)，跳过", fb->len / 1024);
             esp_camera_fb_return(fb);
-            vTaskDelay(50 / portTICK_PERIOD_MS);
-            continue;
+            dropped_frames++;
+            continue;  // 不延时
         }
 
         // 发送边界
@@ -153,11 +188,11 @@ static esp_err_t stream_handler(httpd_req_t *req)
             error_count++;
             if (error_count >= max_errors) {
                 ESP_LOGI(TAG, "错误过多，暂停20秒后重试");
-                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停30秒
+                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停20秒
                 error_count = 0;  // 重置错误计数
                 continue;  // 继续尝试而不是break
             }
-            
+
             // 错误恢复 - 等待网络恢复
             vTaskDelay(500 / portTICK_PERIOD_MS);
             continue;  // 不退出，继续尝试
@@ -173,7 +208,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             error_count++;
             if (error_count >= max_errors) {
                 ESP_LOGI(TAG, "错误过多，暂停20秒后重试");
-                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停30秒
+                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停20秒
                 error_count = 0;  // 重置错误计数
                 continue;  // 继续尝试而不是break
             }
@@ -183,7 +218,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
         }
 
         // 分块发送图像数据 - 增强错误恢复和连接检测
-        const size_t chunk_size = 2048;  // 2KB分块
+        const size_t chunk_size = 1024;  // 1KB分块
         size_t sent = 0;
         bool send_failed = false;
         
@@ -192,58 +227,45 @@ static esp_err_t stream_handler(httpd_req_t *req)
             
             res = httpd_resp_send_chunk(req, (const char *)fb->buf + sent, to_send);
             if (res != ESP_OK) {
-                ESP_LOGW(TAG, "发送数据块失败: %s (位置 %zu/%zu)", 
-                         esp_err_to_name(res), sent, fb->len);
-                
-                // 检查是否是连接断开错误
-                if (res == ESP_ERR_HTTPD_RESP_SEND || 
-                    res == ESP_ERR_HTTPD_INVALID_REQ ||
-                    res == ESP_FAIL) {
-                    ESP_LOGI(TAG, "客户端连接断开，结束流传输");
-                    esp_camera_fb_return(fb);
-                    return res;  // 直接退出，不再重试
-                }
-                
+                ESP_LOGW(TAG, "发送数据块失败: %s", esp_err_to_name(res));
                 send_failed = true;
                 break;
             }
             sent += to_send;
             
-            // 自适应延时 - 根据错误情况调整
-            int delay_ms = (error_count > 2) ? 10 : 5;
-            vTaskDelay(delay_ms / portTICK_PERIOD_MS);
+            // 手机热点模式：增加分块间延时
+            vTaskDelay(5 / portTICK_PERIOD_MS);
         }
 
         esp_camera_fb_return(fb);
         
         if (send_failed) {
             error_count++;
-            ESP_LOGW(TAG, "图像发送失败 (错误计数: %zu)", error_count);
-            
             if (error_count >= max_errors) {
-                ESP_LOGI(TAG, "连续错误过多，断开连接");
-                break;  // 改回break，真正断开
+                ESP_LOGI(TAG, "错误过多，暂停20秒后重试");
+                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停20秒
+                error_count = 0;  // 重置错误计数
+                continue;  // 继续尝试而不是break
             }
-            
-            // 错误恢复延时
-            vTaskDelay(500 / portTICK_PERIOD_MS);  // 减少到500ms
-            continue;  // 不退出，继续尝试
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            continue;
         }
 
         // 发送成功，重置错误计数
         error_count = 0;
 
         // 自适应帧间延时
-        int frame_delay = (error_count > 0) ? 250 : 150;
+        int frame_delay = (error_count > 0) ? 200 : 50;
         vTaskDelay(frame_delay / portTICK_PERIOD_MS);
         
-        // 定期输出状态
-        if ((frame_count / skip_frames) % 15 == 0) {
-            ESP_LOGI(TAG, "已发送 %zu 帧，错误计数: %zu", frame_count / skip_frames, error_count);
+        // 状态输出
+        if ((frame_count / skip_frames) % 20 == 0) {
+            ESP_LOGI(TAG, "发送: %zu 帧, 丢弃: %zu 帧, 错误: %zu", 
+                     frame_count / skip_frames, dropped_frames, error_count);
         }
     }
     
-    ESP_LOGI(TAG, "视频流传输结束");
+    ESP_LOGI(TAG, "视频流传输结束，总丢帧: %zu", dropped_frames);
     return res;
 }
 
