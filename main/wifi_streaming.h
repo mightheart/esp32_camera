@@ -4,8 +4,8 @@
 #include "esp_err.h"
 
 // WiFi配置 - 请修改为你的手机热点信息
-#define WIFI_SSID "哈登的iphone"
-#define WIFI_PASSWORD "Zhj20051013"
+#define WIFI_SSID "你的wifi名称"
+#define WIFI_PASSWORD "你的wifi密码"
 #define WIFI_MAXIMUM_RETRY 5
 
 esp_err_t wifi_init_sta(void);
