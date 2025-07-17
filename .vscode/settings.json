@@ -1,0 +1,17 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPathWin": "d:\\esp32\\v5.4.1\\esp-idf",
+  "idf.pythonInstallPath": "d:\\esp32\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.portWin": "COM9",
+  "idf.toolsPathWin": "d:\\esp32\\.espressif",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3"
+  },
+  "files.associations": {
+    "esp_camera.h": "c",
+    "wifi_streaming.h": "c"
+  }
+}
