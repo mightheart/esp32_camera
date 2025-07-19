@@ -94,7 +94,6 @@ static esp_err_t init_camera(void)
         s->set_brightness(s, 0);
         s->set_contrast(s, 0);
         s->set_saturation(s, 0);
-        s->set_quality(s, 12);  // 保持原来的质量设置
         s->set_colorbar(s, 0);  // 禁用彩条
         s->set_whitebal(s, 1);  // 启用白平衡
         s->set_gain_ctrl(s, 1); // 启用自动增益

@@ -192,18 +192,22 @@ static esp_err_t stream_handler(httpd_req_t *req)
         if (res != ESP_OK) {
             ESP_LOGW(TAG, "发送边界失败: %s (错误计数: %zu)", esp_err_to_name(res), error_count);
             esp_camera_fb_return(fb);
-            
-            error_count++;
-            if (error_count >= max_errors) {
-                ESP_LOGI(TAG, "错误过多，暂停20秒后重试");
-                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停20秒
-                error_count = 0;  // 重置错误计数
-                continue;  // 继续尝试而不是break
+
+            // 检查是否是连接断开
+            if (res == ESP_ERR_HTTPD_RESP_SEND || res == ESP_ERR_HTTPD_INVALID_REQ) {
+                ESP_LOGI(TAG, "客户端已断开连接，结束视频流");
+                break; // 直接退出循环
             }
 
-            // 错误恢复 - 等待网络恢复
+            error_count++;
+            if (error_count >= max_errors) {
+                ESP_LOGI(TAG, "错误过多，暂停5秒后重试");
+                vTaskDelay(5000 / portTICK_PERIOD_MS);
+                error_count = 0;
+                continue;
+            }
             vTaskDelay(500 / portTICK_PERIOD_MS);
-            continue;  // 不退出，继续尝试
+            continue;
         }
 
         // 发送JPEG头
@@ -212,48 +216,56 @@ static esp_err_t stream_handler(httpd_req_t *req)
         if (res != ESP_OK) {
             ESP_LOGW(TAG, "发送头部失败: %s (错误计数: %zu)", esp_err_to_name(res), error_count);
             esp_camera_fb_return(fb);
-            
+
+            if (res == ESP_ERR_HTTPD_RESP_SEND || res == ESP_ERR_HTTPD_INVALID_REQ) {
+                ESP_LOGI(TAG, "客户端已断开连接，结束视频流");
+                break;
+            }
+
             error_count++;
             if (error_count >= max_errors) {
-                ESP_LOGI(TAG, "错误过多，暂停20秒后重试");
-                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停20秒
-                error_count = 0;  // 重置错误计数
-                continue;  // 继续尝试而不是break
+                ESP_LOGI(TAG, "错误过多，暂停5秒后重试");
+                vTaskDelay(5000 / portTICK_PERIOD_MS);
+                error_count = 0;
+                continue;
             }
-            
             vTaskDelay(500 / portTICK_PERIOD_MS);
             continue;
         }
 
-        // 分块发送图像数据 - 增强错误恢复和连接检测
-        const size_t chunk_size = 2024;  // 2KB分块
+        // 分块发送图像数据
+        const size_t chunk_size = 2024;
         size_t sent = 0;
         bool send_failed = false;
-        
+
         while (sent < fb->len && !send_failed) {
             size_t to_send = (fb->len - sent) > chunk_size ? chunk_size : (fb->len - sent);
-            
+
             res = httpd_resp_send_chunk(req, (const char *)fb->buf + sent, to_send);
             if (res != ESP_OK) {
                 ESP_LOGW(TAG, "发送数据块失败: %s", esp_err_to_name(res));
+                // 检查是否是连接断开
+                if (res == ESP_ERR_HTTPD_RESP_SEND || res == ESP_ERR_HTTPD_INVALID_REQ) {
+                    ESP_LOGI(TAG, "客户端已断开连接，结束视频流");
+                    send_failed = true;
+                    break;
+                }
                 send_failed = true;
                 break;
             }
             sent += to_send;
-            
-            // 手机热点模式：增加分块间延时
             vTaskDelay(5 / portTICK_PERIOD_MS);
         }
 
         esp_camera_fb_return(fb);
-        
+
         if (send_failed) {
             error_count++;
             if (error_count >= max_errors) {
-                ESP_LOGI(TAG, "错误过多，暂停20秒后重试");
-                vTaskDelay(20000 / portTICK_PERIOD_MS);  // 暂停20秒
-                error_count = 0;  // 重置错误计数
-                continue;  // 继续尝试而不是break
+                ESP_LOGI(TAG, "错误过多，暂停5秒后重试");
+                vTaskDelay(5000 / portTICK_PERIOD_MS);
+                error_count = 0;
+                continue;
             }
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             continue;
@@ -263,7 +275,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
         error_count = 0;
 
         // 自适应帧间延时
-        int frame_delay = (error_count > 0) ? 200 : 80;
+        int frame_delay = (error_count > 0) ? 200 : 50;
         vTaskDelay(frame_delay / portTICK_PERIOD_MS);
         
         // 状态输出
