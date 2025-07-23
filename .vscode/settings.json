@@ -13,6 +13,7 @@
   "files.associations": {
     "esp_camera.h": "c",
     "wifi_streaming.h": "c",
-    "socket.h": "c"
+    "socket.h": "c",
+    "esp_http_server.h": "c"
   }
 }

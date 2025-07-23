@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "wifi_streaming.h"
+#include "mdns.h"
 
 #ifndef portTICK_RATE_MS
 #define portTICK_RATE_MS portTICK_PERIOD_MS
@@ -132,6 +133,13 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "WiFi initialized successfully");
+
+    // 启动mDNS服务
+    ESP_ERROR_CHECK(mdns_init());
+    ESP_ERROR_CHECK(mdns_hostname_set("zhj-genius-boy")); // 你的域名是 esp32cam.local
+    ESP_ERROR_CHECK(mdns_instance_name_set("ESP32 Camera"));
+
+    ESP_LOGI(TAG, "mDNS started, you can access via http://zhj-genius-boy.local/");
 
     // 启动HTTP服务器
     if(ESP_OK != start_streaming_server()) {
