@@ -8,7 +8,7 @@
 #include "freertos/task.h"
 #include "wifi_streaming.h"
 #include "mdns.h"
-
+#include "wifi_udp.h"
 #ifndef portTICK_RATE_MS
 #define portTICK_RATE_MS portTICK_PERIOD_MS
 #endif
@@ -140,6 +140,9 @@ void app_main(void)
     ESP_ERROR_CHECK(mdns_instance_name_set("ESP32 Camera"));
 
     ESP_LOGI(TAG, "mDNS started, you can access via http://zhj-genius-boy.local/");
+
+    // 启动UDP广播
+    start_udp_broadcast();
 
     // 启动HTTP服务器
     if(ESP_OK != start_streaming_server()) {

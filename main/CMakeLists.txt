@@ -1,4 +1,4 @@
-idf_component_register(SRCS "websocket.c" "wifi_streaming.c" "main.c"
+idf_component_register(SRCS "wifi_udp.c" "websocket.c" "wifi_streaming.c" "main.c"
 
                     INCLUDE_DIRS 
                      "../components/esp32-camera/driver/include" 
