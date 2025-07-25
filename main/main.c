@@ -99,6 +99,7 @@ static esp_err_t init_camera(void)
         s->set_whitebal(s, 1);  // 启用白平衡
         s->set_gain_ctrl(s, 1); // 启用自动增益
         s->set_exposure_ctrl(s, 1); // 启用自动曝光
+        s->set_hmirror(s, 1); // 水平镜像，1为开启，0为关闭
         
         ESP_LOGI(TAG, "传感器配置完成");
         
